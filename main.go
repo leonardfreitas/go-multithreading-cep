@@ -1,140 +1,52 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 )
 
-type BrasilAPIResponse struct {
-	Cep          string `json:"cep"`
-	State        string `json:"state"`
-	City         string `json:"city"`
-	Neighborhood string `json:"neighborhood"`
-	Street       string `json:"street"`
-	Service      string `json:"service"`
+type CEPResponse struct {
+	Provider string
+	CEP      string
 }
 
-func getInBrasilApi(ctx context.Context, cep string, responseCh chan<- string) {
-
-	select {
-	case <-ctx.Done():
-		return
-	default:
-		url := fmt.Sprintf("https://brasilapi.com.br/api/cep/v1/%s", cep)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-
-		if err != nil {
-			log.Println(err)
-			panic(err)
-		}
-
-		res, err := http.DefaultClient.Do(req)
-
-		if err != nil {
-			log.Println(err)
-			panic(err)
-		}
-
-		defer res.Body.Close()
-
-		payload, err := io.ReadAll(res.Body)
-
-		if err != nil {
-			log.Println(err)
-			panic(err)
-		}
-
-		var brasilApiResponse BrasilAPIResponse
-		err = json.Unmarshal(payload, &brasilApiResponse)
-
-		if err != nil {
-			log.Println(err)
-			panic(err)
-		}
-
-		fmt.Println(brasilApiResponse)
+func getCep(url string, ch chan<- string, c *http.Client) {
+	resp, err := c.Get(url)
+	if err != nil {
+		panic(err)
 	}
+	defer resp.Body.Close()
 
-	responseCh <- "API Utilizada: BRASIL API"
+	response, _ := io.ReadAll(resp.Body)
+	ch <- string(response)
 }
 
-type ViaCEPResponse struct {
-	Cep         string `json:"cep"`
-	Logradouro  string `json:"logradouro"`
-	Complemento string `json:"complemento"`
-	Bairro      string `json:"bairro"`
-	Localidade  string `json:"localidade"`
-	Uf          string `json:"uf"`
-	Ibge        string `json:"ibge"`
-	Gia         string `json:"gia"`
-	Ddd         string `json:"ddd"`
-	Siafi       string `json:"siafi"`
-}
-
-func getInViaCep(ctx context.Context, cep string, responseCh chan<- string) {
+func getResult(via_cep_channel chan string, via_cep_cdn chan string) (*CEPResponse, error) {
 	select {
-	case <-ctx.Done():
-		return
-	default:
-		url := fmt.Sprintf("https://viacep.com.br/ws/%s/json/", cep)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-
-		if err != nil {
-			log.Println(err)
-			panic(err)
-		}
-
-		res, err := http.DefaultClient.Do(req)
-
-		if err != nil {
-			log.Println(err)
-			panic(err)
-		}
-
-		defer res.Body.Close()
-
-		payload, err := io.ReadAll(res.Body)
-
-		if err != nil {
-			log.Println(err)
-			panic(err)
-		}
-
-		var viaCepApiResponse ViaCEPResponse
-		err = json.Unmarshal(payload, &viaCepApiResponse)
-
-		if err != nil {
-			log.Println(err)
-			panic(err)
-		}
-
-		fmt.Println(viaCepApiResponse)
+	case msgViaCep := <-via_cep_channel:
+		return &CEPResponse{Provider: "VIACEP", CEP: msgViaCep}, nil
+	case msgCDN := <-via_cep_cdn:
+		return &CEPResponse{Provider: "CDNCEP", CEP: msgCDN}, nil
+	case <-time.After(time.Second):
+		return nil, errors.New("endpoint request timeout")
 	}
-
-	responseCh <- "API Utilizada: VIA CEP"
 }
 
 func main() {
-	ch := make(chan string, 1)
-	ctx, cancel := context.WithCancel(context.Background())
+	c := http.Client{}
+	via_cep_channel := make(chan string)
+	via_cep_cdn := make(chan string)
 
-	go getInBrasilApi(ctx, "63111020", ch)
-	go getInViaCep(ctx, "63111020", ch)
+	go getCep("https://viacep.com.br/ws/63111-020/json/", via_cep_channel, &c)
+	go getCep("https://cdn.apicep.com/file/apicep/63111-020.json", via_cep_cdn, &c)
 
-	fmt.Println(<-ch)
-
-	cancel()
+	result, err := getResult(via_cep_channel, via_cep_cdn)
+	if err != nil {
+		fmt.Println(err.Error())
+	} else {
+		fmt.Println(result)
+	}
 }
